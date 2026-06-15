@@ -69,8 +69,43 @@ def search_listings(
 
     Before writing code, fill in the Tool 1 section of planning.md.
     """
-    # Replace this with your implementation
-    return []
+    listings = load_listings()
+
+    results = []
+    for item in listings:
+        # Filter: price ceiling
+        if max_price is not None and item["price"] > max_price:
+            continue
+
+        # Filter: size (case-insensitive substring so "M" matches "S/M")
+        if size is not None and size.strip().lower() not in item["size"].lower():
+            continue
+
+        # Score: keyword overlap between the description and the listing's text
+        score = _relevance_score(description, item)
+        if score == 0:
+            continue
+
+        results.append((score, item))
+
+    # Sort by score, highest first, and drop the score
+    results.sort(key=lambda pair: pair[0], reverse=True)
+    return [item for _, item in results]
+
+
+def _relevance_score(description: str, item: dict) -> int:
+    """Count how many description keywords appear in the listing's searchable text."""
+    keywords = [w for w in description.lower().split() if w]
+
+    searchable = " ".join([
+        item["title"],
+        item["description"],
+        item["category"],
+        " ".join(item["style_tags"]),
+        " ".join(item["colors"]),
+    ]).lower()
+
+    return sum(1 for word in keywords if word in searchable)
 
 
 # ── Tool 2: suggest_outfit ────────────────────────────────────────────────────
@@ -100,8 +135,51 @@ def suggest_outfit(new_item: dict, wardrobe: dict) -> str:
 
     Before writing code, fill in the Tool 2 section of planning.md.
     """
-    # Replace this with your implementation
-    return ""
+    item_desc = (
+        f"{new_item['title']} "
+        f"(category: {new_item['category']}, "
+        f"style: {', '.join(new_item['style_tags'])}, "
+        f"colors: {', '.join(new_item['colors'])})"
+    )
+
+    items = wardrobe.get("items", [])
+
+    if not items:
+        # Empty wardrobe (new user) — general styling advice, no named pieces.
+        prompt = (
+            f"A shopper is considering this secondhand item: {item_desc}.\n"
+            "They haven't told us anything in their closet yet. In 2-3 sentences, "
+            "suggest what kinds of pieces and colors would pair well with it and "
+            "what overall vibe it suits. Keep it general — don't invent specific "
+            "items they own."
+        )
+    else:
+        wardrobe_lines = "\n".join(
+            f"- {it['name']} ({it['category']}, {', '.join(it['colors'])})"
+            for it in items
+        )
+        prompt = (
+            f"A shopper is considering this secondhand item: {item_desc}.\n\n"
+            f"Here is what's already in their closet:\n{wardrobe_lines}\n\n"
+            "Suggest 1-2 complete outfits built around the new item, naming "
+            "specific pieces from their closet above. Give concrete styling notes "
+            "(tuck, roll, layer, etc.). Keep it to a few sentences per outfit."
+        )
+
+    try:
+        client = _get_groq_client()
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception:
+        # LLM unreachable — return a graceful fallback so the loop can continue.
+        return (
+            f"Couldn't reach the styling model right now, but {new_item['title']} "
+            "would pair well with simple basics in neutral tones."
+        )
 
 
 # ── Tool 3: create_fit_card ───────────────────────────────────────────────────
@@ -133,5 +211,31 @@ def create_fit_card(outfit: str, new_item: dict) -> str:
 
     Before writing code, fill in the Tool 3 section of planning.md.
     """
-    # Replace this with your implementation
-    return ""
+    # Guard: no outfit to caption.
+    if not outfit or not outfit.strip():
+        return "Can't build a fit card without an outfit suggestion — run suggest_outfit first."
+
+    prompt = (
+        "Write a short, casual social media caption (2-4 sentences) for an outfit "
+        "post, like a real OOTD/thrift-haul caption — NOT a product description.\n\n"
+        f"The thrifted item: {new_item['title']}, ${new_item['price']}, "
+        f"found on {new_item['platform']}.\n"
+        f"The outfit: {outfit}\n\n"
+        "Mention the item name, price, and platform naturally (once each). "
+        "Capture the vibe in specific terms. Keep it authentic and a little playful."
+    )
+
+    try:
+        client = _get_groq_client()
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=1.0,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception:
+        # LLM unreachable — return a simple fallback caption.
+        return (
+            f"thrifted this {new_item['title']} off {new_item['platform']} "
+            f"for ${new_item['price']} and i'm obsessed ✨"
+        )

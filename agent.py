@@ -18,7 +18,47 @@ Usage (once implemented):
     print(result["error"])   # None on success
 """
 
-from tools import search_listings, suggest_outfit, create_fit_card
+import json
+
+from tools import search_listings, suggest_outfit, create_fit_card, _get_groq_client
+
+
+# ── query parsing ─────────────────────────────────────────────────────────────
+
+def _parse_query(query: str) -> dict:
+    """
+    Use the LLM to pull structured search params out of the free-text query.
+
+    Returns a dict with keys: description (str), size (str|None), max_price (float|None).
+    If the LLM call or JSON parse fails, fall back to using the whole query as
+    the description with no filters so search still runs.
+    """
+    prompt = (
+        "Extract search parameters from this thrift-shopping request. "
+        "Return ONLY a JSON object with keys: "
+        '"description" (string of the item keywords), '
+        '"size" (string like "M" or "8", or null if not mentioned), '
+        '"max_price" (number, or null if not mentioned).\n\n'
+        f"Request: {query}"
+    )
+
+    try:
+        client = _get_groq_client()
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            response_format={"type": "json_object"},
+        )
+        data = json.loads(response.choices[0].message.content)
+        return {
+            "description": data.get("description") or query,
+            "size": data.get("size"),
+            "max_price": data.get("max_price"),
+        }
+    except Exception:
+        # Fallback: search on the raw query, unfiltered.
+        return {"description": query, "size": None, "max_price": None}
 
 
 # ── session state ─────────────────────────────────────────────────────────────
@@ -92,9 +132,45 @@ def run_agent(query: str, wardrobe: dict) -> dict:
     Before writing code, complete the Planning Loop and State Management sections
     of planning.md — your implementation should match what you described there.
     """
-    # TODO: implement the planning loop
+    # Step 1: fresh session.
     session = _new_session(query, wardrobe)
-    session["error"] = "Planning loop not yet implemented."
+
+    # Step 2: parse the query into search params (LLM, with fallback).
+    session["parsed"] = _parse_query(query)
+    parsed = session["parsed"]
+
+    # Step 3: search.
+    session["search_results"] = search_listings(
+        parsed["description"], parsed["size"], parsed["max_price"]
+    )
+
+    # Branch: nothing found → set error and return early, do NOT continue.
+    if not session["search_results"]:
+        bits = [f"'{parsed['description']}'"]
+        if parsed["size"]:
+            bits.append(f"size {parsed['size']}")
+        if parsed["max_price"] is not None:
+            bits.append(f"under ${parsed['max_price']}")
+        session["error"] = (
+            f"No listings matched {', '.join(bits)}. Try broader keywords, "
+            "a higher price, or dropping the size filter."
+        )
+        return session
+
+    # Step 4: pick the top result.
+    session["selected_item"] = session["search_results"][0]
+
+    # Step 5: suggest an outfit from the selected item + wardrobe.
+    session["outfit_suggestion"] = suggest_outfit(
+        session["selected_item"], session["wardrobe"]
+    )
+
+    # Step 6: turn it into a shareable fit card.
+    session["fit_card"] = create_fit_card(
+        session["outfit_suggestion"], session["selected_item"]
+    )
+
+    # Step 7: done.
     return session
 
 

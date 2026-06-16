@@ -134,15 +134,18 @@ def run_agent(query: str, wardrobe: dict) -> dict:
     """
     # Step 1: fresh session.
     session = _new_session(query, wardrobe)
+    print(f"\n[PLANNING LOOP] new query: {query!r}")
 
     # Step 2: parse the query into search params (LLM, with fallback).
     session["parsed"] = _parse_query(query)
     parsed = session["parsed"]
+    print(f"[STEP 1: parse]  -> {parsed}")
 
     # Step 3: search.
     session["search_results"] = search_listings(
         parsed["description"], parsed["size"], parsed["max_price"]
     )
+    print(f"[STEP 2: search_listings]  -> {len(session['search_results'])} match(es)")
 
     # Branch: nothing found → set error and return early, do NOT continue.
     if not session["search_results"]:
@@ -155,20 +158,27 @@ def run_agent(query: str, wardrobe: dict) -> dict:
             f"No listings matched {', '.join(bits)}. Try broader keywords, "
             "a higher price, or dropping the size filter."
         )
+        print("[BRANCH] empty results -> setting error, STOPPING "
+              "(suggest_outfit / create_fit_card are NOT called)")
         return session
 
     # Step 4: pick the top result.
     session["selected_item"] = session["search_results"][0]
+    print(f"[STATE] selected_item = {session['selected_item']['title']!r}")
 
     # Step 5: suggest an outfit from the selected item + wardrobe.
+    print("[STEP 3: suggest_outfit]  <- passing selected_item + wardrobe")
     session["outfit_suggestion"] = suggest_outfit(
         session["selected_item"], session["wardrobe"]
     )
+    print(f"[STATE] outfit_suggestion stored ({len(session['outfit_suggestion'])} chars)")
 
     # Step 6: turn it into a shareable fit card.
+    print("[STEP 4: create_fit_card]  <- passing outfit_suggestion + selected_item")
     session["fit_card"] = create_fit_card(
         session["outfit_suggestion"], session["selected_item"]
     )
+    print("[STATE] fit_card stored -> done\n")
 
     # Step 7: done.
     return session
